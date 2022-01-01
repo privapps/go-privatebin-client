@@ -6,6 +6,7 @@ import (
 	"crypto/cipher"
 	"crypto/sha256"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io/ioutil"
 	"net/http"
@@ -100,7 +101,6 @@ func main() {
 	input, err := ioutil.ReadAll(os.Stdin)
 	if err != nil {
 		panic(err)
-		return
 	}
 
 	// Remove extra line breaks to prevent PrivateBin from breaking.
@@ -112,21 +112,35 @@ func main() {
 	pasteContent, err := json.Marshal(&PasteContent{Paste: utils.StripANSI(string(input))})
 	if err != nil {
 		panic(err)
-		return
 	}
 
-	// Generate a master key for the paste.
-	masterKey, err := utils.GenRandomBytes(32)
-	if err != nil {
-		panic(err)
-		return
+	var host string
+	var dry bool
+	var expire string
+	var key string
+
+	flag.StringVar(&host, "host", "https://privatebin.net", "private bin host url")
+	flag.BoolVar(&dry, "dry", false, "dry run. not send to the host, output json and hash")
+	flag.StringVar(&expire, "expire", "1day", "expire time, values[ 1day, 1week, 1month, never ]")
+	flag.StringVar(&key, "key", "", "hash key to encrypt")
+	flag.Parse()
+
+	var masterKey []byte
+	if key != "" {
+		masterKey = base58.Decode(key)
+	} else {
+		// Generate a master key for the paste.
+		master, err := utils.GenRandomBytes(32)
+		if err != nil {
+			panic(err)
+		}
+		masterKey = master
 	}
 
 	// Encrypt the paste data
 	pasteData, err := encrypt(masterKey, pasteContent)
 	if err != nil {
 		panic(err)
-		return
 	}
 
 	// Create a new Paste Request.
@@ -134,7 +148,7 @@ func main() {
 		V:     2,
 		AData: pasteData.adata(),
 		Meta: PasteRequestMeta{
-			Expire: "1week",
+			Expire: expire,
 		},
 		CT: utils.Base64(pasteData.Data),
 	}
@@ -143,15 +157,18 @@ func main() {
 	body, err := json.Marshal(pasteRequest)
 	if err != nil {
 		panic(err)
+	}
+
+	if dry {
+		fmt.Printf("%v\n%v\n", base58.Encode(masterKey), bytes.NewBuffer(body))
 		return
 	}
 
 	// Create a new HTTP Client and HTTP Request.
 	client := &http.Client{}
-	req, err := http.NewRequest("POST", "https://privatebin.net", bytes.NewBuffer(body))
+	req, err := http.NewRequest("POST", host, bytes.NewBuffer(body))
 	if err != nil {
 		panic(err)
-		return
 	}
 
 	// Set the request headers.
@@ -163,14 +180,12 @@ func main() {
 	res, err := client.Do(req)
 	if err != nil {
 		panic(err)
-		return
 	}
 
 	// Close the request body once we are done.
 	defer func() {
 		if err := res.Body.Close(); err != nil {
 			panic(err)
-			return
 		}
 	}()
 
@@ -178,17 +193,15 @@ func main() {
 	response, err := ioutil.ReadAll(res.Body)
 	if err != nil {
 		panic(err)
-		return
 	}
 
 	// Decode the response.
 	pasteResponse := &PasteResponse{}
 	if err := json.Unmarshal(response, &pasteResponse); err != nil {
 		panic(err)
-		return
 	}
 
-	fmt.Printf("%s%s#%s\n", "https://privatebin.net", pasteResponse.URL, base58.Encode(masterKey))
+	fmt.Printf("%s%s#%s\n", host, pasteResponse.URL, base58.Encode(masterKey))
 }
 
 func encrypt(master []byte, message []byte) (*PasteData, error) {
